@@ -53,21 +53,45 @@ static inline T io_uring_smp_load_acquire(const T *p)
 		std::memory_order_acquire);
 }
 #else
-#include <stdatomic.h>
 
-#define IO_URING_WRITE_ONCE(var, val)				\
-	atomic_store_explicit((_Atomic __typeof__(var) *)&(var),	\
-			      (val), memory_order_relaxed)
-#define IO_URING_READ_ONCE(var)					\
-	atomic_load_explicit((_Atomic __typeof__(var) *)&(var),	\
-			     memory_order_relaxed)
+/* From tools/include/linux/compiler.h */
+/* Optimization barrier */
+/* The "volatile" is due to gcc bugs */
+#define io_uring_barrier()	__asm__ __volatile__("": : :"memory")
 
-#define io_uring_smp_store_release(p, v)			\
-	atomic_store_explicit((_Atomic __typeof__(*(p)) *)(p), (v), \
-			      memory_order_release)
-#define io_uring_smp_load_acquire(p)				\
-	atomic_load_explicit((_Atomic __typeof__(*(p)) *)(p),	\
-			     memory_order_acquire)
+/* From tools/virtio/linux/compiler.h */
+#define IO_URING_WRITE_ONCE(var, val) \
+	(*((volatile __typeof(val) *)(&(var))) = (val))
+#define IO_URING_READ_ONCE(var) (*((volatile __typeof(var) *)(&(var))))
+
+
+/* Adapted from arch/x86/include/asm/barrier.h */
+#define io_uring_mb()		asm volatile("mfence" ::: "memory")
+#define io_uring_rmb()		asm volatile("lfence" ::: "memory")
+#define io_uring_wmb()		asm volatile("sfence" ::: "memory")
+#define io_uring_smp_rmb()	io_uring_barrier()
+#define io_uring_smp_wmb()	io_uring_barrier()
+#if defined(__i386__)
+#define io_uring_smp_mb()	asm volatile("lock; addl $0,0(%%esp)" \
+					     ::: "memory", "cc")
+#else
+#define io_uring_smp_mb()	asm volatile("lock; addl $0,-132(%%rsp)" \
+					     ::: "memory", "cc")
+#endif
+
+#define io_uring_smp_store_release(p, v)	\
+do {						\
+	io_uring_barrier();			\
+	IO_URING_WRITE_ONCE(*(p), (v));		\
+} while (0)
+
+#define io_uring_smp_load_acquire(p)			\
+({							\
+	__typeof(*p) ___p1 = IO_URING_READ_ONCE(*(p));	\
+	io_uring_barrier();				\
+	___p1;						\
+})
+
 #endif
 
 #endif /* defined(LIBURING_BARRIER_H) */
